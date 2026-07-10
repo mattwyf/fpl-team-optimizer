@@ -1,0 +1,5 @@
+flowchart TD
+    A[Start: valid squad within budget] --> B["Scan pass — order squad slots by price ascending<br/>(upgrade cheapest players first).<br/>For each slot, search the full player pool for a candidate that is:<br/>same position, not already in squad, strictly more predicted points,<br/>new total cost ≤ budget + 0.05, club limit ≤ 3 kept"]
+    B --> C{Improving swap found?}
+    C -- Yes --> S["Swap candidate in<br/>(improved := true)"] --> B
+    C -- No --> I["Return final squad<br/>local optimum reached"]

@@ -1,0 +1,77 @@
+classDiagram
+    direction LR
+
+    class GameweekRecord {
+        +int player_id
+        +str name
+        +int position
+        +str team
+        +float price
+        +int gameweek
+        +int minutes
+        +float total_points
+        +float expected_points
+    }
+
+    class Player {
+        +int player_id
+        +str name
+        +int position
+        +float price
+        +float predicted_points
+        +float efficiency
+        +float appearance_rate
+        +position_name() str
+    }
+
+    class Squad {
+        +list~Player~ players
+        +total_cost() float
+        +total_predicted_points() float
+        +team_counts() dict
+        +captain() Player
+    }
+
+    class DataLoader {
+        +load() list~GameweekRecord~
+    }
+
+    class Predictor {
+        +int lookback_weeks
+        +build_player_pool() list~Player~
+        -_calendar_window() list
+        -_weighted_average() float
+    }
+
+    class SquadBuilder {
+        +float budget
+        +build() Squad
+        -_repair_budget() Squad
+        -_upgrade_squad() Squad
+        -_find_replacement() Player
+    }
+
+    class SquadValidator {
+        +is_valid() tuple
+    }
+
+    class StartingXISelector {
+        +FORMATIONS
+        +select() tuple
+    }
+
+    class FlaskAPI {
+        +GET /api/health
+        +GET /api/gameweeks
+        +POST /api/optimize
+    }
+
+    DataLoader --> GameweekRecord : produces
+    Predictor --> GameweekRecord : consumes
+    Predictor --> Player : produces
+    SquadBuilder --> Player : consumes
+    SquadBuilder --> Squad : produces
+    SquadValidator --> Squad : checks
+    StartingXISelector --> Squad : selects XI from
+    FlaskAPI --> Predictor : reuses
+    FlaskAPI --> SquadBuilder : reuses

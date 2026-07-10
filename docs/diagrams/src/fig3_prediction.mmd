@@ -1,0 +1,10 @@
+flowchart TD
+    A["Start: all CSV records, target gameweek T.<br/>Keep only records with gameweek &lt; T (prevents data leakage), group by player_id"] --> D{For each player}
+    D -- all players done --> P[Return player pool]
+    D --> E["Build calendar window: last N gameweeks before T, missing weeks filled with 0 pts / 0 min"]
+    E --> F{"Eligibility gates: played ≥ 60 min in most recent gameweek<br/>AND started ≥ 3 of the last N gameweeks?"}
+    F -- No --> X["Exclude player (injury / rotation risk)"] --> D
+    F -- Yes --> H["Weekly score = 0.7 × actual points + 0.3 × expected points (xP).<br/>Recency-weighted average, weight 1 (oldest) … N (newest),<br/>scaled by appearance rate. If average minutes &lt; 60, halve prediction"]
+    H --> M{Prediction &gt; 0?}
+    M -- No --> X
+    M -- Yes --> N["Create Player with efficiency = prediction ÷ price, add to pool"] --> D

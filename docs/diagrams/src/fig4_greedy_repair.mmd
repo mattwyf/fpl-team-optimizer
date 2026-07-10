@@ -1,0 +1,9 @@
+flowchart TD
+    A["Start: player pool, budget B<br/>Group players by position and sort each position by<br/>(efficiency, predicted points) descending"] --> C["Greedy pick: fill each position quota (2 GK, 5 DEF, 5 MID, 3 FWD)<br/>skipping duplicates and clubs already at 3 players"]
+    C --> D{Total cost &gt; budget?}
+    D -- No --> H["Proceed to upgrade phase (Fig. 5)"]
+    D -- Yes --> E["Remove worst player (lowest efficiency, then lowest points);<br/>find cheapest-fitting same-position replacement<br/>respecting club limit, preferring one that fits budget"]
+    E --> G{Replacement found?}
+    G -- Yes --> S[Swap in replacement] --> D
+    G -- No --> R[Restore removed player,<br/>stop repairing] --> H
+    D -.->|"safety cap: max 200 iterations"| H

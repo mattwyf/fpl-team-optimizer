@@ -1,0 +1,20 @@
+flowchart LR
+    CSV[("fpl-data-stats.csv<br/>24,655 gameweek rows")] --> DL[DataLoader]
+    DL --> PR[Predictor]
+    PR --> SB[SquadBuilder]
+    SB --> SV[SquadValidator]
+    SB --> XI[StartingXISelector]
+
+    subgraph Clients
+        CLI["Command-line interface<br/>(fpl_optimizer.py main)"]
+        API["Flask HTTP API<br/>(api.py, JSON over HTTP)"]
+        WEB["Web interface<br/>(in development)"]
+    end
+
+    SV --> CLI
+    XI --> CLI
+    SV --> API
+    XI --> API
+    API -.->|JSON| WEB
+
+    style WEB stroke-dasharray: 5 5

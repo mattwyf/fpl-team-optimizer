@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+server.log
+
+# Xcode
+ios/**/xcuserdata/
+ios/**/*.xcodeproj/project.xcworkspace/xcuserdata/
+ios/**/DerivedData/
+.DS_Store

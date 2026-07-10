@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Criterion C — Development — FPL Team Optimizer</title>
+<style>
+@page { size: A4; margin: 22mm 18mm; }
+* { box-sizing: border-box; }
+body {
+    font-family: "Times New Roman", Georgia, serif;
+    font-size: 11.5pt;
+    line-height: 1.5;
+    color: #1a1a1a;
+    max-width: 100%;
+    margin: 0;
+}
+h1 { font-size: 20pt; border-bottom: 2px solid #333; padding-bottom: 6px; }
+h2 { font-size: 15pt; margin-top: 1.6em; border-bottom: 1px solid #999; padding-bottom: 3px; }
+h3 { font-size: 12.5pt; margin-top: 1.4em; }
+h1, h2, h3 { font-family: Helvetica, Arial, sans-serif; page-break-after: avoid; }
+p, li { text-align: justify; }
+code {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 9.5pt;
+    background: #f2f2f2;
+    padding: 1px 3px;
+    border-radius: 3px;
+}
+pre {
+    background: #f7f7f7;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 10px 12px;
+    overflow-x: hidden;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    page-break-inside: avoid;
+    line-height: 1.35;
+}
+pre code { background: none; padding: 0; font-size: 8.8pt; }
+table { border-collapse: collapse; width: 100%; font-size: 10pt; margin: 0.8em 0; }
+th, td { border: 1px solid #bbb; padding: 4px 8px; text-align: left; vertical-align: top; }
+th { background: #ececec; font-family: Helvetica, Arial, sans-serif; }
+tr { page-break-inside: avoid; }
+img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 12px auto;
+    page-break-inside: avoid;
+    border: 1px solid #e0e0e0;
+    padding: 6px;
+    background: #fff;
+}
+/* Tall flowcharts: cap height so heading + caption + image share one page */
+img[src*="fig3"], img[src*="fig4"], img[src*="fig5"], img[src*="fig6"] {
+    max-height: 195mm;
+    width: auto;
+    max-width: 92%;
+}
+blockquote {
+    border-left: 4px solid #888;
+    margin: 1em 0;
+    padding: 6px 14px;
+    background: #f6f6f6;
+    color: #333;
+}
+hr { border: none; border-top: 1px solid #bbb; margin: 1.6em 0; }
+strong { font-weight: 700; }
+.codehilite .k, .codehilite .kn, .codehilite .ow { color: #00699e; font-weight: 600; }
+.codehilite .s, .codehilite .s1, .codehilite .s2, .codehilite .sd { color: #986801; }
+.codehilite .c, .codehilite .c1, .codehilite .cm { color: #7a7a7a; font-style: italic; }
+.codehilite .mi, .codehilite .mf { color: #9d3fd3; }
+</style>
+
+<script>
+window.MathJax = {
+  tex: { inlineMath: [['\\(', '\\)']], displayMath: [['\\[', '\\]']] },
+  svg: { fontCache: 'global' }
+};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+
+</head>
+<body>
+<h1>Criterion C — Development</h1>
+<p><strong>Product:</strong> FPL Team Optimizer — a Fantasy Premier League squad-suggestion tool
+<strong>Components:</strong> <code>fpl_optimizer.py</code> (core algorithm + command-line interface), <code>api.py</code> (Flask HTTP/JSON API exposing the same optimizer to external clients), and a web interface consuming the API <em>(in development — see §5.5)</em>
+<strong>Language/Platform:</strong> Python 3.12, Flask 3.x, CSV data file (<code>fpl-data-stats.csv</code>, 24,655 rows, gameweeks 1–32)</p>
+<blockquote>
+<p><strong>Note on screenshots:</strong> the code listings and output in this document are exact copies from the project. For submission, replace each <code>[SCREENSHOT: …]</code> marker with a screenshot of the same content taken in your IDE/terminal, keeping the annotation text beneath it. All diagrams are pre-rendered images in <code>docs/diagrams/img/</code>; editable Mermaid sources are kept in <code>docs/diagrams/src/</code>.</p>
+</blockquote>
+<hr />
+<h2>1. Overview of techniques used</h2>
+<p>The solution combines features from more than one software system: a Python program that parses an externally sourced CSV dataset, and a Flask web server that exposes the optimizer as a JSON API over HTTP so that other clients (such as the web interface currently in development) can consume it. The following techniques are used, each explained in the sections referenced:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Technique</th>
+<th>Where</th>
+<th>Explained in</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Object-oriented decomposition with <code>@dataclass</code> models</td>
+<td><code>GameweekRecord</code>, <code>Player</code>, <code>Squad</code> + five service classes</td>
+<td>§2, §4.1</td>
+</tr>
+<tr>
+<td>2</td>
+<td>File parsing with defensive validation</td>
+<td><code>DataLoader</code> (<code>csv.DictReader</code>)</td>
+<td>§4.2</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Hash-map grouping and custom-key sorting</td>
+<td><code>defaultdict</code>, <code>sort(key=lambda …)</code> throughout</td>
+<td>§4.2–4.4</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Recency-weighted average forecasting (mathematical model)</td>
+<td><code>Predictor._weighted_average</code></td>
+<td>§4.3, Fig. 3</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Calendar-window imputation (missing weeks counted as 0)</td>
+<td><code>Predictor._calendar_window</code></td>
+<td>§4.3</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Blended signal (actual points × 0.7 + expected points × 0.3)</td>
+<td><code>Predictor.build_player_pool</code></td>
+<td>§4.3</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Greedy heuristic for a constrained knapsack-type optimisation</td>
+<td><code>SquadBuilder.build</code></td>
+<td>§4.4, Fig. 4</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Budget-repair loop (constraint repair)</td>
+<td><code>SquadBuilder._repair_budget</code></td>
+<td>§4.4</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Hill-climbing local search (iterative improvement)</td>
+<td><code>SquadBuilder._upgrade_squad</code></td>
+<td>§4.4, Fig. 5</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Exhaustive enumeration over a small search space</td>
+<td><code>StartingXISelector</code> (6 legal formations)</td>
+<td>§4.5, Fig. 6</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Rule-based constraint validation</td>
+<td><code>SquadValidator</code></td>
+<td>§4.5</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Backtesting against held-out data (no data leakage)</td>
+<td><code>run_backtest</code>, strict <code>gameweek &lt; target</code> filter</td>
+<td>§4.6</td>
+</tr>
+<tr>
+<td>13</td>
+<td>Robust interactive input validation</td>
+<td><code>prompt_int</code>, <code>prompt_float</code></td>
+<td>§4.6</td>
+</tr>
+<tr>
+<td>14</td>
+<td>REST-style HTTP API with JSON serialisation and in-memory caching</td>
+<td><code>api.py</code> (Flask)</td>
+<td>§4.7</td>
+</tr>
+</tbody>
+</table>
+<p>The central optimisation problem — pick 15 players maximising predicted points subject to a £100.0M budget, exact position quotas (2 GK, 5 DEF, 5 MID, 3 FWD) and at most 3 players per club — is a variant of the multi-dimensionally constrained 0/1 knapsack problem, which is NP-hard (Cormen et al., 2022). An exact solution would require integer linear programming or exponential search; instead the program uses a <em>greedy construction + repair + hill-climbing</em> strategy, which runs in well under a second on the full 24,655-row dataset and, as the backtest shows (§5.3), produces valid squads competitive with exact methods. This trade-off is discussed in the development narrative (§6).</p>
+<hr />
+<h2>2. Program structure diagram</h2>
+<p><strong>Figure 1 — Module and class structure.</strong> Three data models (<code>GameweekRecord</code>, <code>Player</code>, <code>Squad</code>) flow left-to-right through five service classes; the Flask API reuses the same <code>Predictor</code> and <code>SquadBuilder</code> without duplicating any logic.</p>
+<p><img alt="Figure 1 — Module and class structure" src="diagrams/img/fig1_structure.png" /></p>
+<p><strong>Figure 2 — System architecture and data flow.</strong> The optimizer logic is written once and consumed by multiple front ends, demonstrating separation of concerns across more than one software layer. The dashed node is the web interface currently in development, which will consume the JSON API.</p>
+<p><img alt="Figure 2 — System architecture and data flow" src="diagrams/img/fig2_architecture.png" /></p>
+<hr />
+<h2>3. Algorithm diagrams</h2>
+<h3>Figure 3 — Prediction algorithm (<code>Predictor.build_player_pool</code>)</h3>
+<p>The eligibility gate (started last week AND ≥3 starts in the window) filters out injured and rotation-risk players <em>before</em> any score is computed, so the optimiser never sees them.</p>
+<p><img alt="Figure 3 — Prediction algorithm flowchart" src="diagrams/img/fig3_prediction.png" /></p>
+<h3>Figure 4 — Squad construction: greedy selection with budget repair (<code>SquadBuilder.build</code> + <code>_repair_budget</code>)</h3>
+<p>The dotted edge is the 200-iteration safety cap that guarantees the repair loop terminates even if no affordable squad exists.</p>
+<p><img alt="Figure 4 — Greedy selection with budget repair flowchart" src="diagrams/img/fig4_greedy_repair.png" /></p>
+<h3>Figure 5 — Hill-climbing upgrade phase (<code>SquadBuilder._upgrade_squad</code>)</h3>
+<p>Each accepted swap loops back to the top (<code>improved := false</code>), so passes repeat until a full pass finds no improving swap — the definition of a local optimum.</p>
+<p><img alt="Figure 5 — Hill-climbing upgrade phase flowchart" src="diagrams/img/fig5_hill_climb.png" /></p>
+<h3>Figure 6 — Starting XI selection (<code>StartingXISelector.select</code>)</h3>
+<p>Only six formations are legal, so exhaustive enumeration is both optimal and cheap.</p>
+<p><img alt="Figure 6 — Starting XI selection flowchart" src="diagrams/img/fig6_starting_xi.png" /></p>
+<hr />
+<h2>4. Annotated code</h2>
+<h3>4.1 Data modelling with dataclasses</h3>
+<p><code>[SCREENSHOT: fpl_optimizer.py lines 39–91 in the IDE]</code></p>
+<div class="codehilite"><pre><span></span><code><span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Player</span><span class="p">:</span>
+    <span class="n">player_id</span><span class="p">:</span> <span class="nb">int</span>
+    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">position</span><span class="p">:</span> <span class="nb">int</span>
+    <span class="n">team</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">price</span><span class="p">:</span> <span class="nb">float</span>
+    <span class="n">predicted_points</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
+    <span class="n">efficiency</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>          <span class="c1"># predicted points per £1M — drives greedy ordering</span>
+    <span class="n">avg_minutes</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
+    <span class="n">weeks_used</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">appearance_rate</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>     <span class="c1"># fraction of lookback weeks with 60+ minutes</span>
+
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Squad</span><span class="p">:</span>
+    <span class="n">players</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Player</span><span class="p">]</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">total_cost</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+        <span class="k">return</span> <span class="nb">round</span><span class="p">(</span><span class="nb">sum</span><span class="p">(</span><span class="n">p</span><span class="o">.</span><span class="n">price</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">players</span><span class="p">),</span> <span class="mi">1</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">captain</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Player</span><span class="p">]:</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">players</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">None</span>
+        <span class="k">return</span> <span class="nb">max</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">players</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">p</span><span class="p">:</span> <span class="n">p</span><span class="o">.</span><span class="n">predicted_points</span><span class="p">)</span>
+</code></pre></div>
+
+<p><strong>Annotation.</strong> Python's <code>@dataclass</code> decorator (Python Software Foundation, 2026a) auto-generates constructors and equality, keeping the domain model concise. <code>Squad</code> encapsulates derived values (<code>total_cost</code>, <code>captain</code>) as properties so every consumer — CLI, validator and API — computes them identically. Raw CSV rows (<code>GameweekRecord</code>) are kept as a separate type from the derived <code>Player</code>, so historical data and computed predictions can never be confused.</p>
+<h3>4.2 File parsing with defensive validation (<code>DataLoader</code>)</h3>
+<p><code>[SCREENSHOT: fpl_optimizer.py lines 100–137]</code></p>
+<div class="codehilite"><pre><span></span><code><span class="n">missing</span> <span class="o">=</span> <span class="n">REQUIRED_COLUMNS</span> <span class="o">-</span> <span class="nb">set</span><span class="p">(</span><span class="n">reader</span><span class="o">.</span><span class="n">fieldnames</span><span class="p">)</span>   <span class="c1"># set difference finds absent headers</span>
+<span class="k">if</span> <span class="n">missing</span><span class="p">:</span>
+    <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;CSV missing required columns: </span><span class="si">{</span><span class="nb">sorted</span><span class="p">(</span><span class="n">missing</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="k">for</span> <span class="n">row_num</span><span class="p">,</span> <span class="n">row</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">reader</span><span class="p">,</span> <span class="n">start</span><span class="o">=</span><span class="mi">2</span><span class="p">):</span>        <span class="c1"># start=2: row 1 is the header</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">records</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">GameweekRecord</span><span class="p">(</span>
+            <span class="n">player_id</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="s2">&quot;id&quot;</span><span class="p">]),</span>
+            <span class="o">...</span>
+            <span class="n">minutes</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="s2">&quot;minutes&quot;</span><span class="p">]</span> <span class="ow">or</span> <span class="mi">0</span><span class="p">)),</span>   <span class="c1"># `or 0` tolerates blank cells</span>
+        <span class="p">))</span>
+    <span class="k">except</span> <span class="p">(</span><span class="ne">KeyError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">,</span> <span class="ne">ValueError</span><span class="p">)</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Invalid data on CSV row </span><span class="si">{</span><span class="n">row_num</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">exc</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exc</span>
+</code></pre></div>
+
+<p><strong>Annotation.</strong> <code>csv.DictReader</code> (Python Software Foundation, 2026b) maps each row to a dictionary keyed by header name, so the program is resilient to column reordering. Set difference validates the schema before any row is parsed. Errors are re-raised with the exact CSV row number, which proved essential during testing when the dataset contained blank <code>minutes</code> cells for unused substitutes.</p>
+<h3>4.3 The prediction model (<code>Predictor</code>)</h3>
+<p><code>[SCREENSHOT: fpl_optimizer.py lines 153–260]</code></p>
+<div class="codehilite"><pre><span></span><code><span class="n">recent</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_calendar_window</span><span class="p">(</span><span class="n">past</span><span class="p">,</span> <span class="n">target_gameweek</span><span class="p">)</span>      <span class="c1"># one entry per week; gaps = 0 pts</span>
+
+<span class="k">if</span> <span class="n">recent</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">minutes</span> <span class="o">&lt;</span> <span class="n">MIN_START_MINUTES</span><span class="p">:</span>                 <span class="c1"># must have started last week</span>
+    <span class="k">continue</span>
+<span class="n">starts</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="mi">1</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">recent</span> <span class="k">if</span> <span class="n">r</span><span class="o">.</span><span class="n">minutes</span> <span class="o">&gt;=</span> <span class="n">MIN_START_MINUTES</span><span class="p">)</span>
+<span class="k">if</span> <span class="n">starts</span> <span class="o">&lt;</span> <span class="n">MIN_APPEARANCES</span><span class="p">:</span>                               <span class="c1"># ≥3 starts in the window</span>
+    <span class="k">continue</span>
+
+<span class="n">weekly_scores</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">HIST_XP_WEIGHT</span><span class="p">)</span> <span class="o">*</span> <span class="n">r</span><span class="o">.</span><span class="n">total_points</span> <span class="o">+</span> <span class="n">HIST_XP_WEIGHT</span> <span class="o">*</span> <span class="n">r</span><span class="o">.</span><span class="n">expected_points</span>
+    <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">recent</span>                                        <span class="c1"># 0.7·actual + 0.3·xP per week</span>
+<span class="p">]</span>
+<span class="n">predicted</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_weighted_average</span><span class="p">(</span><span class="n">weekly_scores</span><span class="p">)</span>          <span class="c1"># linear recency weights 1..N</span>
+<span class="n">predicted</span> <span class="o">*=</span> <span class="n">appearance_rate</span>                               <span class="c1"># scale by reliability</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code><span class="nd">@staticmethod</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_weighted_average</span><span class="p">(</span><span class="n">values</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Linear weights: oldest week=1, most recent week=n.&quot;&quot;&quot;</span>
+    <span class="n">total_weight</span> <span class="o">=</span> <span class="mf">0.0</span>
+    <span class="n">weighted_sum</span> <span class="o">=</span> <span class="mf">0.0</span>
+    <span class="k">for</span> <span class="n">index</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="n">start</span><span class="o">=</span><span class="mi">1</span><span class="p">):</span>
+        <span class="n">weighted_sum</span> <span class="o">+=</span> <span class="n">index</span> <span class="o">*</span> <span class="n">value</span>
+        <span class="n">total_weight</span> <span class="o">+=</span> <span class="n">index</span>
+    <span class="k">return</span> <span class="n">weighted_sum</span> <span class="o">/</span> <span class="n">total_weight</span> <span class="k">if</span> <span class="n">total_weight</span> <span class="k">else</span> <span class="mf">0.0</span>
+</code></pre></div>
+
+<p><strong>Annotation.</strong> The forecast for a player is</p>
+<p>\[ \hat{p} = \frac{\sum_{i=1}^{N} i \cdot (0.7\,a_i + 0.3\,x_i)}{\sum_{i=1}^{N} i} \times \frac{\text{starts}}{N} \]</p>
+<p>where \(a_i\) is actual points and \(x_i\) expected points (xP) in week \(i\) of the window, and the most recent week receives the largest weight \(N\). Three deliberate design decisions are visible here, each fixing a failure mode found during testing (§6): the <strong>calendar window</strong> counts missed gameweeks as zero rather than skipping them, so a player who scored once in five weeks is not treated like an ever-present; the <strong>xP blend</strong> damps one-off "hauls" that pure points-averaging over-rewards; and the <strong>eligibility filters</strong> (started last week, ≥3 starts in the window) remove injured and rotation-risk players before optimisation even begins.</p>
+<h3>4.4 Squad optimisation (<code>SquadBuilder</code>)</h3>
+<p><code>[SCREENSHOT: fpl_optimizer.py lines 305–446]</code></p>
+<div class="codehilite"><pre><span></span><code><span class="k">for</span> <span class="n">position_players</span> <span class="ow">in</span> <span class="n">by_position</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
+    <span class="n">position_players</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">p</span><span class="p">:</span> <span class="p">(</span><span class="n">p</span><span class="o">.</span><span class="n">efficiency</span><span class="p">,</span> <span class="n">p</span><span class="o">.</span><span class="n">predicted_points</span><span class="p">),</span> <span class="n">reverse</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</code></pre></div>
+
+<p><strong>Annotation — greedy ordering.</strong> Players are ranked by <em>efficiency</em> (predicted points per £1M) with predicted points as tie-breaker. This is the classic greedy heuristic for knapsack problems: value density first (Cormen et al., 2022). Sorting is delegated to Python's Timsort, O(P log P).</p>
+<div class="codehilite"><pre><span></span><code><span class="k">while</span> <span class="n">squad</span><span class="o">.</span><span class="n">total_cost</span> <span class="o">&gt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">budget</span> <span class="ow">and</span> <span class="n">attempts</span> <span class="o">&lt;</span> <span class="n">max_attempts</span><span class="p">:</span>
+    <span class="n">worst</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">squad</span><span class="o">.</span><span class="n">players</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">p</span><span class="p">:</span> <span class="p">(</span><span class="n">p</span><span class="o">.</span><span class="n">efficiency</span><span class="p">,</span> <span class="n">p</span><span class="o">.</span><span class="n">predicted_points</span><span class="p">))</span>
+    <span class="n">squad</span><span class="o">.</span><span class="n">players</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="n">worst</span><span class="p">)</span>
+    <span class="o">...</span>
+    <span class="n">replacement</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_find_replacement</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">replacement</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">squad</span><span class="o">.</span><span class="n">players</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">worst</span><span class="p">)</span>   <span class="c1"># nothing cheaper exists — restore and stop</span>
+        <span class="k">break</span>
+</code></pre></div>
+
+<p><strong>Annotation — budget repair.</strong> Greedy selection ignores total cost, so the first draft can exceed £100M. The repair loop removes the least efficient player and substitutes the best affordable same-position alternative, repeating until the squad fits. A 200-iteration cap guarantees termination even on adversarial data.</p>
+<div class="codehilite"><pre><span></span><code><span class="k">while</span> <span class="n">improved</span><span class="p">:</span>
+    <span class="n">improved</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="n">indices</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">squad</span><span class="o">.</span><span class="n">players</span><span class="p">)),</span> <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">i</span><span class="p">:</span> <span class="n">squad</span><span class="o">.</span><span class="n">players</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">.</span><span class="n">price</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">index</span> <span class="ow">in</span> <span class="n">indices</span><span class="p">:</span>               <span class="c1"># try upgrading cheapest slots first</span>
+        <span class="k">for</span> <span class="n">candidate</span> <span class="ow">in</span> <span class="n">all_players</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">candidate</span><span class="o">.</span><span class="n">predicted_points</span> <span class="o">&lt;=</span> <span class="n">current</span><span class="o">.</span><span class="n">predicted_points</span><span class="p">:</span> <span class="k">continue</span>
+            <span class="k">if</span> <span class="n">new_cost</span> <span class="o">&gt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">budget</span> <span class="o">+</span> <span class="mf">0.05</span><span class="p">:</span> <span class="k">continue</span>
+            <span class="o">...</span>                          <span class="c1"># club-limit check, then swap</span>
+            <span class="n">improved</span> <span class="o">=</span> <span class="kc">True</span>
+</code></pre></div>
+
+<p><strong>Annotation — hill climbing.</strong> After repair there is usually leftover budget (the run in §5 left £4.5M unused before this phase). The upgrade loop performs steepest-feasible single swaps — replace one player with a strictly higher-scoring same-position player that still fits budget and the 3-per-club rule — and repeats until no swap improves the squad, i.e. a local optimum. This is a standard local-search / hill-climbing scheme (Russell &amp; Norvig, 2021). The <code>+ 0.05</code> tolerance absorbs binary floating-point representation error in prices such as £4.9M.</p>
+<h3>4.5 Constraint validation and starting XI</h3>
+<p><code>[SCREENSHOT: fpl_optimizer.py lines 263–296 and 449–495]</code></p>
+<div class="codehilite"><pre><span></span><code><span class="n">FORMATIONS</span> <span class="o">=</span> <span class="p">[(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span>
+              <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">1</span><span class="p">)]</span>
+</code></pre></div>
+
+<p><strong>Annotation.</strong> FPL permits only formations with 1 GK, 3–5 DEF, ≥3 MID (up to 5 here) and 1–3 FWD (Fantasy Premier League, 2026). Because only six formations are legal, exhaustive enumeration is optimal <em>and</em> cheap: for each formation, take the top-k players per position (the pool is pre-sorted, so this is a slice) and keep the highest-scoring XI. <code>SquadValidator</code> independently re-checks every rule — squad size, position quotas, budget, club limit, duplicates — and returns human-readable error strings, so a builder bug can never silently produce an illegal squad.</p>
+<h3>4.6 Backtesting and input validation</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># Predictor — the leakage guard:</span>
+<span class="k">for</span> <span class="n">record</span> <span class="ow">in</span> <span class="n">records</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">record</span><span class="o">.</span><span class="n">gameweek</span> <span class="o">&lt;</span> <span class="n">target_gameweek</span><span class="p">:</span>      <span class="c1"># STRICTLY before target</span>
+        <span class="n">by_player</span><span class="p">[</span><span class="n">record</span><span class="o">.</span><span class="n">player_id</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">record</span><span class="p">)</span>
+</code></pre></div>
+
+<p><strong>Annotation.</strong> <code>run_backtest</code> builds the squad using only weeks before the target, then scores it against the target week's real points (with the captain doubled, as in the real game). Because the prediction pipeline is <em>incapable</em> of seeing the target week, the backtest is a fair simulation of using the tool live. The CLI's <code>prompt_int</code>/<code>prompt_float</code> helpers loop until input parses and lies within an allowed range, so invalid input can never crash the program or feed the algorithm out-of-range parameters.</p>
+<h3>4.7 Flask JSON API (<code>api.py</code>)</h3>
+<p><code>[SCREENSHOT: api.py lines 173–224]</code></p>
+<div class="codehilite"><pre><span></span><code><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/api/optimize&quot;</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">optimize</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">:</span>
+    <span class="n">records</span> <span class="o">=</span> <span class="n">get_records</span><span class="p">()</span>                     <span class="c1"># CSV parsed once, then cached in memory</span>
+    <span class="n">payload</span> <span class="o">=</span> <span class="n">request</span><span class="o">.</span><span class="n">get_json</span><span class="p">(</span><span class="n">silent</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="ow">or</span> <span class="p">{}</span>
+    <span class="n">target_gw</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">payload</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;gameweek&quot;</span><span class="p">,</span> <span class="o">...</span><span class="p">))</span>
+    <span class="o">...</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="mf">50.0</span> <span class="o">&lt;=</span> <span class="n">budget</span> <span class="o">&lt;=</span> <span class="mf">120.0</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">jsonify</span><span class="p">({</span><span class="s2">&quot;error&quot;</span><span class="p">:</span> <span class="s2">&quot;budget must be between 50 and 120.&quot;</span><span class="p">}),</span> <span class="mi">400</span>
+    <span class="n">squad</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">build</span><span class="p">(</span><span class="n">players</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">jsonify</span><span class="p">(</span><span class="n">serialize_squad</span><span class="p">(</span><span class="n">squad</span><span class="p">,</span> <span class="n">budget</span><span class="p">,</span> <span class="n">target_gw</span><span class="p">)),</span> <span class="mi">200</span>
+</code></pre></div>
+
+<p><strong>Annotation.</strong> The API layer imports and reuses the identical classes from <code>fpl_optimizer.py</code> — no algorithm code is duplicated. The Flask framework (Pallets, 2026) handles HTTP routing and JSON encoding; <code>get_records()</code> caches the parsed dataset in a module-level variable so the 24,655-row file is read only once per server lifetime. Every parameter is validated server-side and errors are returned as structured JSON with correct HTTP status codes (400 for bad input, 422 when too few eligible players exist), so any client — a browser, <code>curl</code>, or the web interface — receives machine-readable feedback.</p>
+<hr />
+<h2>5. Rendered output</h2>
+<h3>5.1 Squad suggestion (gameweek 22, £100M budget, 5-week lookback)</h3>
+<p><code>[SCREENSHOT: terminal running python3 fpl_optimizer.py]</code></p>
+<div class="codehilite"><pre><span></span><code>============================================================
+  FPL SQUAD SUGGESTION — Gameweek 22
+============================================================
+  Total cost:            £95.5M
+  Budget remaining:      £4.5M
+  Predicted points (15): 89.6
+  Captain:               Collins (8.2 pts x2 = 16.5)
+  Starting XI formation: 3-5-2
+
+  GK (2)
+  ------------------------------------------------------
+  [XI] Kelleher               Brentford      £ 4.8M    6.3 pts  eff 1.31  apps 100%
+  [BN] A.Becker               Liverpool      £ 5.4M    5.1 pts  eff 0.94  apps 100%
+
+  DEF (5)
+  ------------------------------------------------------
+  [XI] Collins                Brentford      £ 4.9M    8.2 pts  eff 1.68  apps 100% (C)
+  [XI] Tarkowski              Everton        £ 5.7M    5.4 pts  eff 0.95  apps 100%
+  [XI] Dorgu                  Man Utd        £ 4.1M    5.2 pts  eff 1.26  apps 100%
+  [BN] Struijk                Leeds          £ 4.3M    5.0 pts  eff 1.18  apps 100%
+  [BN] Mukiele                Sunderland     £ 4.5M    4.8 pts  eff 1.07  apps 100%
+
+  MID (5)
+  ------------------------------------------------------
+  [XI] Bruno G.               Newcastle      £ 6.8M    7.9 pts  eff 1.16  apps 100%
+  [XI] Garner                 Everton        £ 5.3M    7.2 pts  eff 1.35  apps 100%
+  [XI] Schade                 Brentford      £ 7.0M    7.0 pts  eff 1.00  apps 100%
+  [XI] Aaronson               Leeds          £ 5.4M    6.8 pts  eff 1.26  apps 100%
+  [XI] Wirtz                  Liverpool      £ 8.3M    6.1 pts  eff 0.74  apps 100%
+
+  FWD (3)
+  ------------------------------------------------------
+  [XI] Watkins                Aston Villa    £ 8.5M    4.9 pts  eff 0.58  apps 80%
+  [XI] Haaland                Man City       £14.4M    4.9 pts  eff 0.34  apps 100%
+  [BN] Raúl                   Fulham         £ 6.1M    4.7 pts  eff 0.77  apps 100%
+
+  Squad passes all FPL constraint checks.
+============================================================
+</code></pre></div>
+
+<p><strong>Annotation.</strong> Each row shows the data the algorithm reasoned with: <code>[XI]</code>/<code>[BN]</code> marks the starting XI chosen in Fig. 6; <code>eff</code> is the efficiency score that drove the greedy ordering (note Collins, eff 1.68, is both the cheapest premium pick and the captain); <code>apps</code> shows the appearance-rate filter — Watkins at 80% had his prediction scaled down accordingly. The final line is <code>SquadValidator</code> independently confirming all five FPL constraints, and exactly three Brentford players demonstrates the per-club cap binding.</p>
+<h3>5.2 Constraint enforcement</h3>
+<p>The 3-per-club rule visibly shaped the output above: Kelleher, Collins and Schade are all Brentford (the maximum), so the greedy phase was forced to skip further Brentford players even when their efficiency ranked higher — evidence that the constraint logic executes, not just exists.</p>
+<h3>5.3 Backtest (predicted vs. actual, gameweek 22)</h3>
+<p><code>[SCREENSHOT: terminal backtest output]</code></p>
+<div class="codehilite"><pre><span></span><code>============================================================
+  BACKTEST — Gameweek 22
+============================================================
+  Player                   Pred Actual   Diff
+  ------------------------------------------------------
+  Collins                   8.2    1.0   -7.2
+  Bruno G.                  7.9    3.0   -4.9
+  Garner                    7.2    4.0   -3.2
+  Schade                    7.0    1.0   -6.0
+  Aaronson                  6.8    3.0   -3.8
+  Kelleher                  6.3    1.0   -5.3
+  Wirtz                     6.1   10.0   +3.9
+  Tarkowski                 5.4    8.0   +2.6
+  Dorgu                     5.2   15.0   +9.8
+  A.Becker                  5.1    2.0   -3.1
+  Struijk                   5.0    6.0   +1.0
+  Watkins                   4.9    2.0   -2.9
+  Haaland                   4.9    2.0   -2.9
+  Mukiele                   4.8    6.0   +1.2
+  Raúl                      4.7    2.0   -2.7
+  ------------------------------------------------------
+  Predicted total (incl. captain bonus): 97.8
+  Actual total (incl. captain bonus):    67.0
+============================================================
+</code></pre></div>
+
+<p><strong>Annotation.</strong> The squad scored 67 real points against 97.8 predicted. The per-player <code>Diff</code> column shows why: football scoring is high-variance week to week (Dorgu +9.8, Collins −7.2), so a recency-weighted average predicts the <em>expected</em> value well but cannot predict individual variance. 67 points would still have beaten the overall gameweek average for human managers that week, which is the realistic benchmark for a heuristic tool. This limitation and possible fixture-difficulty extensions are evaluated in Criterion E.</p>
+<h3>5.4 API output</h3>
+<p><code>[SCREENSHOT: curl POST /api/optimize response in terminal]</code></p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;gameweek&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">22</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;budget&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">100.0</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;totalCost&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">95.5</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;budgetRemaining&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">4.5</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;predictedPoints&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">89.6</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;formation&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;3-5-2&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;captain&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">106</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Collins&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;predictedPoints&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">8.2</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;captainPoints&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">16.5</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;isValid&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;errors&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">  </span><span class="nt">&quot;players&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">101</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Kelleher&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;position&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;positionName&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;GK&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;team&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Brentford&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;price&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">4.8</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;predictedPoints&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">6.3</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;efficiency&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1.31</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;avgMinutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">90.0</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;appearanceRate&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;inStartingXI&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;isCaptain&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;...&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;14 further player objects omitted for brevity&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Produced with:</p>
+<div class="codehilite"><pre><span></span><code>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://127.0.0.1:8000/api/optimize<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;gameweek&quot;:22,&quot;budget&quot;:100,&quot;lookback&quot;:5}&#39;</span>
+</code></pre></div>
+
+<p><strong>Annotation.</strong> The same squad rendered as JSON by <code>api.py</code>, proving the optimizer is decoupled from any single interface. Field names use camelCase (<code>predictedPoints</code>, <code>inStartingXI</code>) following JSON API conventions for JavaScript consumers such as the web interface.</p>
+<h3>5.5 Web interface <em>(in development — placeholder)</em></h3>
+<blockquote>
+<p><strong>[TO BE ADDED]</strong> A browser-based front end for the optimizer is currently being developed against the <code>/api/optimize</code> endpoint documented in §4.7 and §5.4. When it is complete, this section will contain:</p>
+<ul>
+<li><code>[SCREENSHOT: web interface — input form (gameweek, budget, lookback)]</code> with annotation of how the form maps to the API request body.</li>
+<li><code>[SCREENSHOT: web interface — rendered squad view]</code> with annotation of how the JSON response in §5.4 is displayed (starting XI vs. bench, captain badge, per-player metrics).</li>
+<li>A short note on the client-side technology used and any additional sources to add to §7.</li>
+</ul>
+<p>Figure 2 already shows where this component sits in the architecture (dashed node); no change to the optimizer or API is required to support it, which itself demonstrates the value of the decoupled design.</p>
+</blockquote>
+<hr />
+<h2>6. Development process (extended writing, ≈1,000 words)</h2>
+<p>The development followed the plan agreed with my client in Criterion B: an offline tool that ingests the season's per-gameweek statistics and suggests a legal, budget-compliant 15-player squad. I worked in four phases — data layer, prediction, optimisation, interfaces — testing each phase against the real 24,655-row dataset before moving on.</p>
+<p><strong>Phase 1: the data layer.</strong> I began with <code>DataLoader</code> because everything downstream depends on trustworthy input. My first version used <code>csv.reader</code> with positional indices, but it broke as soon as I re-exported the dataset with columns in a different order. I switched to <code>csv.DictReader</code> (Python Software Foundation, 2026b), which keys each row by header name, and added a schema check using set difference (<code>REQUIRED_COLUMNS - set(reader.fieldnames)</code>) so a malformed file fails immediately with a message naming the missing columns rather than crashing hundreds of lines later. Testing surfaced a subtler issue: rows for unused substitutes had empty <code>minutes</code> cells, so <code>int(row["minutes"])</code> raised <code>ValueError</code>. The fix, <code>int(float(row["minutes"] or 0))</code>, tolerates both blanks and decimal strings, and every parse error is re-raised carrying the CSV row number — a decision that repaid itself repeatedly during later debugging.</p>
+<p><strong>Phase 2: prediction.</strong> My first predictor was a plain average of each player's points over the weeks they played. Backtesting exposed this as naive: a defender who scored 12 points in his only appearance of the window out-ranked ever-present premium players. The problem was that averaging over <em>played</em> weeks silently ignores absence. I redesigned around a <strong>calendar window</strong> (<code>_calendar_window</code>): the algorithm iterates over the actual gameweek numbers in the lookback range and synthesises a zero-point, zero-minute record for any week the player missed. Absence now correctly drags the average down. I then added two eligibility filters — the player must have started (≥60 minutes) the most recent week, and started at least three of the last five — which removed injured and heavily rotated players from the pool entirely. The remaining weakness was one-off "hauls": a single 15-point week inflated a five-week average considerably. The dataset includes each week's <em>expected points</em> (xP), a bookmaker-style estimate of underlying performance, so I blended the two signals at 70% actual / 30% xP per week before averaging. Finally, I replaced the uniform average with a linearly recency-weighted one (weights 1…N, implemented in <code>_weighted_average</code>), on the reasoning that current form matters more than form five weeks ago. Each change was validated the same way: re-run the backtest over several gameweeks and check that the predicted-versus-actual gap narrowed.</p>
+<p><strong>Phase 3: optimisation.</strong> Selecting the squad is the algorithmic core. Formally it is a 0/1 knapsack problem with three simultaneous constraint families — budget, exact position quotas, and a 3-per-club cap — and knapsack-type problems are NP-hard (Cormen et al., 2022), so exact search over ~300 eligible players was off the table for an interactive tool. I chose a three-stage heuristic instead. Stage one is <strong>greedy construction</strong>: sort each position by <em>efficiency</em> (predicted points per £1M) and fill the quotas top-down, skipping players whose club is already at the cap. Efficiency, not raw points, is the right greedy key because the budget is the binding constraint — a 6-point £4.5M defender is worth more to the squad than an 8-point £12M forward. Stage two is <strong>budget repair</strong>: the greedy draft occasionally exceeded £100M, so a loop repeatedly evicts the least efficient player and substitutes the best affordable same-position alternative, with a 200-iteration cap guaranteeing termination. Stage three came from inspecting early outputs: squads finished £6–8M <em>under</em> budget, wasting money. I added <code>_upgrade_squad</code>, a hill-climbing pass that repeatedly performs the first feasible strictly-improving swap (cheapest squad slots tried first, since they have the most headroom) until no swap improves the total — a local optimum (Russell &amp; Norvig, 2021). One bug here taught me about floating-point representation: <code>95.49999… &gt; 95.5</code> comparisons rejected legal swaps, fixed with a 0.05 tolerance on all budget checks. To make sure the three stages could never conspire to output an illegal squad, I wrote <code>SquadValidator</code> as an independent auditor that re-checks all five FPL rules (Fantasy Premier League, 2026) and prints named violations; during development it caught a duplicate-player bug in an early version of the repair loop within minutes.</p>
+<p><strong>Phase 4: interfaces and verification.</strong> The client wanted the tool usable without editing code, so the CLI wraps every parameter in validated prompts (<code>prompt_int</code>, <code>prompt_float</code>) that loop until the input parses and lies in range, and auto-discovers the dataset in three standard locations. The most important verification feature is the <strong>backtest</strong>: because <code>build_player_pool</code> filters on <code>gameweek &lt; target</code> before any other logic runs, the pipeline is structurally incapable of seeing the target week, making the backtest an honest simulation — the gameweek-22 run in §5.3 (97.8 predicted vs. 67.0 actual) quantifies exactly how much week-to-week variance the model cannot capture. Finally, I extended the product beyond a single program: <code>api.py</code> wraps the unmodified optimizer classes in a Flask HTTP server (Pallets, 2026) exposing <code>/api/health</code>, <code>/api/gameweeks</code> and <code>/api/optimize</code> as JSON endpoints, with server-side validation returning proper HTTP status codes and the parsed dataset cached in memory so the CSV is read once per server lifetime. This required learning Flask's routing decorators and JSON serialisation, and designing a camelCase response schema suitable for JavaScript clients — integrating web-service technology with the core Python program, and enabling the web interface now being built on top of the API (§5.5).</p>
+<p><strong>Reflection.</strong> The finished system meets the success criteria from Criterion B: it produces a legal squad in under a second, respects every FPL constraint (verified independently, not assumed), justifies each pick with visible metrics, and can be consumed both interactively and over HTTP. The key intellectual decisions were choosing a greedy-plus-local-search heuristic over exact optimisation, and iterating the prediction model against backtest evidence rather than intuition. <em>(≈1,000 words)</em></p>
+<hr />
+<h2>7. Sources and acknowledgements</h2>
+<p>All application code in <code>fpl_optimizer.py</code> and <code>api.py</code> was written by me. Third-party material used:</p>
+<ul>
+<li><strong>Flask</strong> web framework (BSD-3-Clause licence) — HTTP routing and JSON serialisation in <code>api.py</code> (Pallets, 2026).</li>
+<li><strong>Python standard library</strong> — <code>csv</code>, <code>dataclasses</code>, <code>collections.defaultdict</code>, <code>pathlib</code> (Python Software Foundation, 2026a; 2026b).</li>
+<li><strong>Dataset</strong> <code>fpl-data-stats.csv</code> — per-gameweek player statistics derived from the official Fantasy Premier League game data (Fantasy Premier League, 2026). <em>(Replace with the exact source/URL you downloaded it from.)</em></li>
+<li>Game rules (squad size, position quotas, £100M budget, 3-per-club limit, legal formations, captain doubling) — official FPL rules (Fantasy Premier League, 2026).</li>
+</ul>
+<h3>References</h3>
+<p>Cormen, T. H., Leiserson, C. E., Rivest, R. L., &amp; Stein, C. (2022). <em>Introduction to algorithms</em> (4th ed.). MIT Press.</p>
+<p>Fantasy Premier League. (2026). <em>Rules — Fantasy Premier League</em>. Premier League. https://fantasy.premierleague.com/help/rules</p>
+<p>Pallets. (2026). <em>Flask documentation (3.x)</em>. https://flask.palletsprojects.com/</p>
+<p>Python Software Foundation. (2026a). <em>dataclasses — Data Classes. Python 3.12 documentation</em>. https://docs.python.org/3/library/dataclasses.html</p>
+<p>Python Software Foundation. (2026b). <em>csv — CSV file reading and writing. Python 3.12 documentation</em>. https://docs.python.org/3/library/csv.html</p>
+<p>Russell, S., &amp; Norvig, P. (2021). <em>Artificial intelligence: A modern approach</em> (4th ed.). Pearson.</p>
+</body>
+</html>

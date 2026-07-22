@@ -160,6 +160,11 @@ class Predictor:
             if record.gameweek < target_gameweek:
                 by_player[record.player_id].append(record)
 
+        # The lookback window can only reach back to the first gameweek that
+        # actually has data (e.g. targeting GW2 means only GW1 is usable,
+        # regardless of the configured lookback).
+        first_gameweek = min((r.gameweek for r in records), default=1)
+
         players: list[Player] = []
 
         for player_id, history in by_player.items():
@@ -170,7 +175,7 @@ class Predictor:
             past.sort(key=lambda r: r.gameweek)
             latest = past[-1]
 
-            recent = self._calendar_window(past, target_gameweek)
+            recent = self._calendar_window(past, target_gameweek, first_gameweek)
             if not recent:
                 continue
 
@@ -179,7 +184,10 @@ class Predictor:
                 continue
 
             starts = sum(1 for record in recent if record.minutes >= MIN_START_MINUTES)
-            if starts < MIN_APPEARANCES:
+            # Scale the appearance requirement to the actual window size:
+            # early in the season fewer past weeks exist than MIN_APPEARANCES.
+            required_starts = min(MIN_APPEARANCES, len(recent))
+            if starts < required_starts:
                 continue
 
             appearance_rate = starts / len(recent)
@@ -217,11 +225,16 @@ class Predictor:
         return players
 
     def _calendar_window(
-        self, past: list[GameweekRecord], target_gameweek: int
+        self, past: list[GameweekRecord], target_gameweek: int, first_gameweek: int = 1
     ) -> list[GameweekRecord]:
-        """Return one record per gameweek for the last N weeks before the target."""
+        """Return one record per gameweek for the last N weeks before the target.
+
+        The window never extends before `first_gameweek` (the earliest gameweek
+        present in the dataset), so a large lookback early in the season simply
+        uses however many weeks actually exist.
+        """
         by_gw = {record.gameweek: record for record in past}
-        start_gw = max(1, target_gameweek - self.lookback_weeks)
+        start_gw = max(first_gameweek, target_gameweek - self.lookback_weeks)
         window: list[GameweekRecord] = []
 
         for gameweek in range(start_gw, target_gameweek):
@@ -672,7 +685,15 @@ def main() -> None:
     )
 
     budget = prompt_float("Budget in millions", DEFAULT_BUDGET, 80.0, 100.0)
-    lookback = prompt_int("Lookback weeks for prediction", DEFAULT_LOOKBACK, 1, 10)
+
+    # Can't look back further than the history that exists before the target.
+    max_lookback = min(10, target_gw - min_gw)
+    lookback = prompt_int(
+        "Lookback weeks for prediction",
+        min(DEFAULT_LOOKBACK, max_lookback),
+        1,
+        max_lookback,
+    )
 
     backtest_choice = input("\nRun backtest against actual GW points? (y/n) [n]: ").strip().lower()
     run_test = backtest_choice == "y"

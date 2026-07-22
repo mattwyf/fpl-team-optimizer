@@ -124,13 +124,23 @@ budget = st.sidebar.slider(
     step=0.5,
 )
 
-lookback = st.sidebar.slider(
-    "Lookback weeks",
-    min_value=1,
-    max_value=10,
-    value=DEFAULT_LOOKBACK,
-    help="How many past gameweeks feed the weighted-average prediction.",
-)
+# Only gameweeks between the start of the data and the target can be looked at,
+# so cap the slider at the history that actually exists.
+max_lookback = min(10, int(target_gw) - min_gw)
+if max_lookback > 1:
+    lookback = st.sidebar.slider(
+        "Lookback weeks",
+        min_value=1,
+        max_value=max_lookback,
+        value=min(DEFAULT_LOOKBACK, max_lookback),
+        help="How many past gameweeks feed the weighted-average prediction. "
+        f"Capped at {max_lookback} — the number of gameweeks before the target.",
+    )
+else:
+    lookback = 1
+    st.sidebar.caption(
+        "Lookback fixed at 1 week — only one gameweek exists before the target."
+    )
 
 show_backtest = st.sidebar.checkbox(
     "Backtest against actual points",
